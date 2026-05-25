@@ -1,0 +1,27 @@
+listen:
+  mixed: "127.0.0.1:7890"
+  control: "127.0.0.1:17990"
+
+provider:
+  enabled: true
+  # 仅为模板。真实值请放在环境变量或本地 config.yaml 中。
+  url: "{{URL}}"
+  timeout: "5s"
+  default_scheme: "http"
+  default_ttl: "10m"
+
+upstream:
+  # 可选启动锁定上游；适合 provider 凭据还没配好时先手动测试。
+  url: ""
+  dial_timeout: "3s"
+
+switching:
+  # 当前版本只做手动锁定和手动切换；自动刷新开关暂不启用。
+  auto_refresh: false
+  fail_closed_on_expired: true
+  interrupt_existing_default: false
+  fallback_to_direct: false
+  history_limit: 50
+
+logging:
+  level: "info"

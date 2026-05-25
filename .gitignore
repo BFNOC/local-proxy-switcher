@@ -1,0 +1,18 @@
+config.yaml
+config.local.yaml
+.env
+*.log
+logs/
+bin/
+dist/
+/lps
+
+# AI 协作与审查产物
+.ccg/
+.antigravitycli/
+.codex/
+.claude/
+.gemini/
+.cursor/
+.aider*
+/plan.md

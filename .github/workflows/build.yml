@@ -1,0 +1,82 @@
+name: build
+
+on:
+  push:
+    paths:
+      - VERSION
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            ext: ""
+          - goos: linux
+            goarch: arm64
+            ext: ""
+          - goos: darwin
+            goarch: amd64
+            ext: ""
+          - goos: darwin
+            goarch: arm64
+            ext: ""
+          - goos: windows
+            goarch: amd64
+            ext: ".exe"
+          - goos: windows
+            goarch: arm64
+            ext: ".exe"
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 读取版本
+        id: version
+        shell: bash
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          if [ -z "$version" ]; then
+            echo "VERSION 文件为空" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: 测试
+        run: go test ./...
+
+      - name: 静态检查
+        run: go vet ./...
+
+      - name: 编译
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          artifact="local-proxy-switcher-${VERSION}-${GOOS}-${GOARCH}"
+          mkdir -p "dist/${artifact}"
+          go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "dist/${artifact}/lps${{ matrix.ext }}" ./cmd/lps
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-proxy-switcher-${{ steps.version.outputs.version }}-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/local-proxy-switcher-${{ steps.version.outputs.version }}-${{ matrix.goos }}-${{ matrix.goarch }}/lps${{ matrix.ext }}
+          if-no-files-found: error

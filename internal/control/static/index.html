@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>本地代理切换器</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #101314;
+      color: #eef2f1;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #101314;
+    }
+    main {
+      width: min(760px, calc(100vw - 32px));
+      border: 1px solid #2f3937;
+      border-radius: 8px;
+      padding: 24px;
+      background: #171c1b;
+    }
+    h1 {
+      margin: 0 0 18px;
+      font-size: 24px;
+      font-weight: 650;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+    .cell {
+      border: 1px solid #2f3937;
+      border-radius: 6px;
+      padding: 12px;
+      min-height: 58px;
+    }
+    .label {
+      color: #94a29e;
+      font-size: 12px;
+      margin-bottom: 5px;
+    }
+    .value {
+      overflow-wrap: anywhere;
+      font-size: 15px;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    button {
+      border: 1px solid #53625e;
+      background: #20302c;
+      color: #eef2f1;
+      border-radius: 6px;
+      padding: 9px 12px;
+      cursor: pointer;
+    }
+    button:hover { background: #29413a; }
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid #53625e;
+      background: #0f1212;
+      color: #eef2f1;
+      border-radius: 6px;
+      padding: 10px;
+      margin-bottom: 10px;
+    }
+    .error { color: #ffb4a8; }
+    @media (max-width: 620px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>本地代理切换器</h1>
+  <div class="grid">
+    <div class="cell"><div class="label">当前上游</div><div class="value" id="current">-</div></div>
+    <div class="cell"><div class="label">剩余时间</div><div class="value" id="expires">-</div></div>
+    <div class="cell"><div class="label">线路</div><div class="value" id="net">-</div></div>
+    <div class="cell"><div class="label">活跃连接</div><div class="value" id="active">-</div></div>
+  </div>
+  <div class="actions">
+    <button onclick="post('/switch')">切换</button>
+    <button onclick="post('/switch?interrupt=true')">切换并中断旧连接</button>
+    <button onclick="post('/clear')">清空</button>
+    <button onclick="refresh()">刷新</button>
+  </div>
+  <input id="manual" placeholder="http://1.2.3.4:8080 或 socks5://user:pass@1.2.3.4:1080">
+  <div class="actions">
+    <button onclick="lockManual(false)">手动锁定</button>
+    <button onclick="lockManual(true)">手动锁定并中断</button>
+  </div>
+  <div class="cell"><div class="label">最近结果</div><div class="value" id="result">-</div></div>
+</main>
+<script>
+async function refresh() {
+  try {
+    const res = await fetch('/status');
+    const data = await res.json();
+    render(data);
+  } catch (err) {
+    show('error', err.message);
+  }
+}
+function render(data) {
+  document.getElementById('current').textContent = data.current ? data.current.url : '无';
+  document.getElementById('expires').textContent = data.current ? (data.current.expires_in || '-') : '-';
+  document.getElementById('net').textContent = data.current ? (data.current.net || '-') : '-';
+  document.getElementById('active').textContent = data.active_connections;
+  show(data.last_error ? 'error' : '', data.last_error || data.last_switch || '成功');
+}
+async function post(path, body) {
+  try {
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: body ? {'Content-Type': 'application/json'} : {},
+      body: body ? JSON.stringify(body) : undefined
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    render(data);
+  } catch (err) {
+    show('error', err.message);
+  }
+}
+function lockManual(interrupt) {
+  const url = document.getElementById('manual').value.trim();
+  if (!url) return show('error', '缺少手动上游地址');
+  post('/lock' + (interrupt ? '?interrupt=true' : ''), {url});
+}
+function show(cls, text) {
+  const el = document.getElementById('result');
+  el.className = 'value ' + cls;
+  el.textContent = text || '-';
+}
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
