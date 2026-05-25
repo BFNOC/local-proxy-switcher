@@ -35,6 +35,27 @@ func TestParseJSONResponseUsesServerDateTTL(t *testing.T) {
 	}
 }
 
+func TestParseJSONResponseAcceptsStringPort(t *testing.T) {
+	now := time.Date(2026, 5, 25, 10, 0, 0, 0, time.UTC)
+	body := []byte(`{"data":{"list":[{"ip":"203.0.113.11","port":"40044","expired":0,"net":"移动"}]},"code":0,"message":"","status":200}`)
+
+	up, err := ParseResponse(body, ParseOptions{
+		DefaultScheme: "http",
+		DefaultTTL:    10 * time.Minute,
+		ServerNow:     now,
+		LocalNow:      now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if up.Host != "203.0.113.11" || up.Port != 40044 {
+		t.Fatalf("unexpected upstream: %+v", up)
+	}
+	if up.Net != "移动" {
+		t.Fatalf("unexpected net: %q", up.Net)
+	}
+}
+
 func TestParsePlainResponseUsesDefaultTTL(t *testing.T) {
 	now := time.Date(2026, 5, 25, 10, 0, 0, 0, time.UTC)
 	up, err := ParseResponse([]byte("198.51.100.20:8080\n"), ParseOptions{

@@ -130,10 +130,32 @@ type ipzanResponse struct {
 }
 
 type ipzanNode struct {
-	IP      string `json:"ip"`
-	Port    int    `json:"port"`
-	Expired int64  `json:"expired"`
-	Net     string `json:"net"`
+	IP      string    `json:"ip"`
+	Port    ipzanPort `json:"port"`
+	Expired int64     `json:"expired"`
+	Net     string    `json:"net"`
+}
+
+type ipzanPort int
+
+// UnmarshalJSON 兼容 IPZAN 端口的数字和字符串两种返回格式。
+func (p *ipzanPort) UnmarshalJSON(data []byte) error {
+	var number int
+	if err := json.Unmarshal(data, &number); err == nil {
+		*p = ipzanPort(number)
+		return nil
+	}
+
+	var text string
+	if err := json.Unmarshal(data, &text); err != nil {
+		return fmt.Errorf("provider port must be number or string: %w", err)
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(text))
+	if err != nil {
+		return fmt.Errorf("invalid provider port %q", text)
+	}
+	*p = ipzanPort(port)
+	return nil
 }
 
 // ParseResponse 解析 IPZAN JSON 或普通 ip:port 响应。
