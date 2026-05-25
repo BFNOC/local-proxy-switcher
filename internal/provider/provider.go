@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +31,7 @@ type Fetcher struct {
 	timeout       time.Duration
 	defaultScheme string
 	defaultTTL    time.Duration
+	urlTTL        time.Duration
 	client        *http.Client
 }
 
@@ -44,6 +46,7 @@ func NewFetcher(opts Options) *Fetcher {
 	if opts.DefaultTTL <= 0 {
 		opts.DefaultTTL = 10 * time.Minute
 	}
+	urlTTL, _ := ttlFromURLMinute(opts.URL)
 	if opts.HTTPClient == nil {
 		opts.HTTPClient = http.DefaultClient
 	}
@@ -52,6 +55,7 @@ func NewFetcher(opts Options) *Fetcher {
 		timeout:       opts.Timeout,
 		defaultScheme: opts.DefaultScheme,
 		defaultTTL:    opts.DefaultTTL,
+		urlTTL:        urlTTL,
 		client:        opts.HTTPClient,
 	}
 }
@@ -89,6 +93,7 @@ func (f *Fetcher) Fetch(ctx context.Context) (upstream.Upstream, error) {
 	up, err := ParseResponse(body, ParseOptions{
 		DefaultScheme: f.defaultScheme,
 		DefaultTTL:    f.defaultTTL,
+		URLTTL:        f.urlTTL,
 		ServerNow:     serverNow,
 		LocalNow:      time.Now(),
 	})
@@ -112,10 +117,27 @@ func safeProviderError(err error, rawURL string) string {
 	return strings.ReplaceAll(err.Error(), rawURL, redact.URL(rawURL))
 }
 
+func ttlFromURLMinute(rawURL string) (time.Duration, bool) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return 0, false
+	}
+	minuteText := strings.TrimSpace(parsed.Query().Get("minute"))
+	if minuteText == "" {
+		return 0, false
+	}
+	minutes, err := strconv.ParseInt(minuteText, 10, 64)
+	if err != nil || minutes <= 0 {
+		return 0, false
+	}
+	return time.Duration(minutes) * time.Minute, true
+}
+
 // ParseOptions 控制 provider 响应解析。
 type ParseOptions struct {
 	DefaultScheme string
 	DefaultTTL    time.Duration
+	URLTTL        time.Duration
 	ServerNow     time.Time
 	LocalNow      time.Time
 }
@@ -197,7 +219,8 @@ func parseJSON(body []byte, opts ParseOptions) (upstream.Upstream, error) {
 	if node.IP == "" || node.Port <= 0 {
 		return upstream.Upstream{}, errors.New("provider returned invalid proxy")
 	}
-	up, err := upstream.Parse(fmt.Sprintf("%s://%s:%d", opts.DefaultScheme, node.IP, node.Port), opts.DefaultScheme, opts.DefaultTTL)
+	fallbackTTL := effectiveFallbackTTL(opts)
+	up, err := upstream.Parse(fmt.Sprintf("%s://%s:%d", opts.DefaultScheme, node.IP, node.Port), opts.DefaultScheme, fallbackTTL)
 	if err != nil {
 		return upstream.Upstream{}, err
 	}
@@ -223,25 +246,34 @@ func parsePlain(body string, opts ParseOptions) (upstream.Upstream, error) {
 	if _, err := strconv.Atoi(strings.TrimSpace(portText)); err != nil {
 		return upstream.Upstream{}, fmt.Errorf("invalid plain provider port %q", portText)
 	}
-	up, err := upstream.Parse(opts.DefaultScheme+"://"+line, opts.DefaultScheme, opts.DefaultTTL)
+	fallbackTTL := effectiveFallbackTTL(opts)
+	up, err := upstream.Parse(opts.DefaultScheme+"://"+line, opts.DefaultScheme, fallbackTTL)
 	if err != nil {
 		return upstream.Upstream{}, err
 	}
 	up.Source = "provider"
 	up.FetchedAt = opts.LocalNow
-	up.ExpiresAt = opts.LocalNow.Add(opts.DefaultTTL)
+	up.ExpiresAt = opts.LocalNow.Add(fallbackTTL)
 	up.ID = fmt.Sprintf("%s@%d", up.BaseURL(), up.FetchedAt.Unix())
 	return up, nil
 }
 
 func expiryFromProvider(expiredMS int64, opts ParseOptions) time.Time {
+	fallback := opts.LocalNow.Add(effectiveFallbackTTL(opts))
 	if expiredMS <= 0 {
-		return opts.LocalNow.Add(opts.DefaultTTL)
+		return fallback
 	}
 	providerExpiry := time.UnixMilli(expiredMS)
 	ttl := providerExpiry.Sub(opts.ServerNow)
 	if ttl <= 0 || ttl > 24*time.Hour {
-		return opts.LocalNow.Add(opts.DefaultTTL)
+		return fallback
 	}
 	return opts.LocalNow.Add(ttl)
+}
+
+func effectiveFallbackTTL(opts ParseOptions) time.Duration {
+	if opts.URLTTL > 0 {
+		return opts.URLTTL
+	}
+	return opts.DefaultTTL
 }

@@ -65,6 +65,8 @@ provider:
 
 真实 `IPZAN_NO` 和 `IPZAN_SECRET` 建议放在环境变量里，不要写进仓库。
 
+代理有效期优先级是：IPZAN JSON 里的 `expired` 优先；JSON 没有 `expired` 时使用 `provider.url` 里的 `minute=10`；两者都没有时才使用 `default_ttl`。
+
 JSON 响应形状示例：
 
 ```json
@@ -105,7 +107,7 @@ GET  /ui
 
 ## 版本和构建
 
-当前版本是 `0.1.2`，以根目录 `VERSION` 文件为准。
+当前版本是 `0.1.3`，以根目录 `VERSION` 文件为准。
 
 GitHub Actions 只在 `VERSION` 文件变更的 push 上执行三端编译，并创建或更新 `v版本号` 的 GitHub Release。Release assets 只包含对应平台的单个可执行文件：
 

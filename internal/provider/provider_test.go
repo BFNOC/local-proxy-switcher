@@ -16,7 +16,8 @@ func TestParseJSONResponseUsesServerDateTTL(t *testing.T) {
 
 	up, err := ParseResponse(body, ParseOptions{
 		DefaultScheme: "http",
-		DefaultTTL:    10 * time.Minute,
+		DefaultTTL:    30 * time.Minute,
+		URLTTL:        3 * time.Minute,
 		ServerNow:     serverNow,
 		LocalNow:      localNow,
 	})
@@ -56,6 +57,25 @@ func TestParseJSONResponseAcceptsStringPort(t *testing.T) {
 	}
 }
 
+func TestParseJSONResponseUsesURLMinuteWhenExpiredMissing(t *testing.T) {
+	now := time.Date(2026, 5, 25, 10, 0, 0, 0, time.UTC)
+	body := []byte(`{"data":{"list":[{"ip":"203.0.113.12","port":40045,"net":"联通"}]},"code":0,"message":"","status":200}`)
+
+	up, err := ParseResponse(body, ParseOptions{
+		DefaultScheme: "http",
+		DefaultTTL:    10 * time.Minute,
+		URLTTL:        3 * time.Minute,
+		ServerNow:     now,
+		LocalNow:      now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !up.ExpiresAt.Equal(now.Add(3 * time.Minute)) {
+		t.Fatalf("expires = %s, want %s", up.ExpiresAt, now.Add(3*time.Minute))
+	}
+}
+
 func TestParsePlainResponseUsesDefaultTTL(t *testing.T) {
 	now := time.Date(2026, 5, 25, 10, 0, 0, 0, time.UTC)
 	up, err := ParseResponse([]byte("198.51.100.20:8080\n"), ParseOptions{
@@ -72,6 +92,48 @@ func TestParsePlainResponseUsesDefaultTTL(t *testing.T) {
 	}
 	if !up.ExpiresAt.Equal(now.Add(5 * time.Minute)) {
 		t.Fatalf("unexpected expiry: %s", up.ExpiresAt)
+	}
+}
+
+func TestParsePlainResponseUsesURLMinuteBeforeDefaultTTL(t *testing.T) {
+	now := time.Date(2026, 5, 25, 10, 0, 0, 0, time.UTC)
+	up, err := ParseResponse([]byte("198.51.100.21:8081\n"), ParseOptions{
+		DefaultScheme: "http",
+		DefaultTTL:    10 * time.Minute,
+		URLTTL:        3 * time.Minute,
+		LocalNow:      now,
+		ServerNow:     now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !up.ExpiresAt.Equal(now.Add(3 * time.Minute)) {
+		t.Fatalf("expires = %s, want %s", up.ExpiresAt, now.Add(3*time.Minute))
+	}
+}
+
+func TestNewFetcherKeepsURLMinuteTTLSeparately(t *testing.T) {
+	fetcher := NewFetcher(Options{
+		URL:        "https://service.ipzan.com/core-extract?num=1&minute=3&format=json",
+		DefaultTTL: 10 * time.Minute,
+	})
+
+	if fetcher.defaultTTL != 10*time.Minute {
+		t.Fatalf("defaultTTL = %s, want 10m", fetcher.defaultTTL)
+	}
+	if fetcher.urlTTL != 3*time.Minute {
+		t.Fatalf("urlTTL = %s, want 3m", fetcher.urlTTL)
+	}
+}
+
+func TestNewFetcherKeepsConfigTTLWithoutURLMinute(t *testing.T) {
+	fetcher := NewFetcher(Options{
+		URL:        "https://service.ipzan.com/core-extract?num=1&format=json",
+		DefaultTTL: 10 * time.Minute,
+	})
+
+	if fetcher.defaultTTL != 10*time.Minute {
+		t.Fatalf("defaultTTL = %s, want 10m", fetcher.defaultTTL)
 	}
 }
 
