@@ -105,9 +105,20 @@ GET  /ui
 
 ## 版本和构建
 
-当前版本是 `0.1.0`，以根目录 `VERSION` 文件为准。
+当前版本是 `0.1.1`，以根目录 `VERSION` 文件为准。
 
-GitHub Actions 只在 `VERSION` 文件变更的 push 上执行三端编译，产物只上传对应平台的单个可执行文件。配置文件不打包进产物，请在目标机器上把 `config.yaml` 放到可执行文件同目录。
+GitHub Actions 只在 `VERSION` 文件变更的 push 上执行三端编译，并创建或更新 `v版本号` 的 GitHub Release。Release assets 只包含对应平台的单个可执行文件：
+
+```text
+lps-linux-amd64
+lps-linux-arm64
+lps-darwin-amd64
+lps-darwin-arm64
+lps-windows-amd64.exe
+lps-windows-arm64.exe
+```
+
+配置文件不打包进 Release assets，请在目标机器上把 `config.yaml` 放到可执行文件同目录。
 
 ## 设计参考
 
