@@ -21,6 +21,7 @@ import (
 	"github.com/BFNOC/local-proxy-switcher/internal/control"
 	"github.com/BFNOC/local-proxy-switcher/internal/mixed"
 	"github.com/BFNOC/local-proxy-switcher/internal/provider"
+	"github.com/BFNOC/local-proxy-switcher/internal/refresher"
 	"github.com/BFNOC/local-proxy-switcher/internal/selector"
 	"github.com/BFNOC/local-proxy-switcher/internal/tracker"
 	"github.com/BFNOC/local-proxy-switcher/internal/upstream"
@@ -94,9 +95,6 @@ func serve(args []string) error {
 	if !config.IsLoopbackBind(cfg.Listen.Control) {
 		return fmt.Errorf("control bind must be loopback in this version: %s", cfg.Listen.Control)
 	}
-	if cfg.Switching.AutoRefresh {
-		return errors.New("auto_refresh 当前未实现，请保持 false 并使用 lps switch 手动切换")
-	}
 
 	tr := tracker.New()
 	sel := selector.New(selector.Options{
@@ -126,9 +124,20 @@ func serve(args []string) error {
 			DefaultTTL:    cfg.Provider.DefaultTTLDuration(),
 		})
 	}
+	if cfg.Switching.AutoRefresh && fetcher == nil {
+		return errors.New("auto_refresh requires provider.enabled and provider.url")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if cfg.Switching.AutoRefresh {
+		auto := refresher.New(refresher.Options{
+			Fetcher:   fetcher,
+			Selector:  sel,
+			Interrupt: cfg.Switching.InterruptExistingDefault,
+		})
+		go auto.Run(ctx)
+	}
 
 	ctrl := control.NewServer(control.Options{
 		Addr:      cfg.Listen.Control,
@@ -150,6 +159,9 @@ func serve(args []string) error {
 
 	fmt.Printf("mixed listening:   %s\n", cfg.Listen.Mixed)
 	fmt.Printf("控制面板:          http://%s\n", cfg.Listen.Control)
+	if cfg.Switching.AutoRefresh {
+		fmt.Println("自动刷新:          已启用")
+	}
 	if cur, ok := sel.Current(); ok {
 		fmt.Printf("当前上游:          %s\n", cur.RedactedURL())
 	} else {

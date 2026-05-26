@@ -36,6 +36,10 @@ type Selector struct {
 	history      []SwitchEvent
 	historyLimit int
 	lastError    string
+	watchers     []chan struct{}
+
+	providerRefreshPaused bool
+	version               uint64
 }
 
 // SwitchEvent 记录一次锁定、切换或清空操作。
@@ -80,44 +84,41 @@ func (s *Selector) Current() (upstream.Upstream, bool) {
 
 // Switch 原子锁定新上游，后续新连接会使用它。
 func (s *Selector) Switch(up upstream.Upstream, interrupt bool, reason string) {
-	prev, _ := s.Current()
-	from := ""
-	if prev.Scheme != "" {
-		from = prev.RedactedURL()
-	}
 	copyUp := up
-	s.current.Store(&copyUp)
-	s.appendHistory(SwitchEvent{
-		At:        time.Now(),
-		From:      from,
-		To:        copyUp.RedactedURL(),
-		Reason:    reason,
-		Interrupt: interrupt,
-		Upstream:  &copyUp,
-	})
-	s.SetLastError("")
+	s.mu.Lock()
+	watchers := s.switchLocked(copyUp, interrupt, reason)
+	s.mu.Unlock()
+
 	if interrupt || (!interrupt && s.interruptDefault) {
 		s.tracker.Interrupt()
 	}
+	notifyWatchers(watchers)
 }
 
 // Clear 清除当前上游锁定。
 func (s *Selector) Clear(interrupt bool, reason string) {
-	prev, _ := s.Current()
+	s.mu.Lock()
+	prev := s.current.Load()
 	from := ""
-	if prev.Scheme != "" {
+	if prev != nil && prev.Scheme != "" {
 		from = prev.RedactedURL()
 	}
 	s.current.Store(nil)
-	s.appendHistory(SwitchEvent{
+	s.appendHistoryLocked(SwitchEvent{
 		At:        time.Now(),
 		From:      from,
 		Reason:    reason,
 		Interrupt: interrupt,
 	})
+	s.providerRefreshPaused = true
+	s.version++
+	watchers := s.watchersLocked()
+	s.mu.Unlock()
+
 	if interrupt {
 		s.tracker.Interrupt()
 	}
+	notifyWatchers(watchers)
 }
 
 // Dial 使用当前锁定上游打开到目标的连接。
@@ -165,12 +166,117 @@ func (s *Selector) SetLastError(msg string) {
 	s.lastError = msg
 }
 
-func (s *Selector) appendHistory(event SwitchEvent) {
+// ProviderRefreshSnapshot 返回自动刷新调度需要的同一时刻状态快照。
+func (s *Selector) ProviderRefreshSnapshot() (upstream.Upstream, bool, bool, uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	ptr := s.current.Load()
+	if ptr == nil {
+		return upstream.Upstream{}, false, s.providerRefreshPaused, s.version
+	}
+	return *ptr, true, s.providerRefreshPaused, s.version
+}
+
+// Watch 返回一个在当前上游变化时收到通知的通道。
+func (s *Selector) Watch() <-chan struct{} {
+	ch := make(chan struct{}, 1)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.watchers = append(s.watchers, ch)
+	return ch
+}
+
+// Unwatch 注销 Watch 返回的通道，避免后台任务重启时残留订阅者。
+func (s *Selector) Unwatch(ch <-chan struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, watcher := range s.watchers {
+		if watcher == ch {
+			copy(s.watchers[i:], s.watchers[i+1:])
+			s.watchers[len(s.watchers)-1] = nil
+			s.watchers = s.watchers[:len(s.watchers)-1]
+			return
+		}
+	}
+}
+
+// SetProviderRefreshError 只在状态未变化时记录后台刷新错误，避免覆盖新的手动切换结果。
+func (s *Selector) SetProviderRefreshError(msg string, expectedVersion uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.version != expectedVersion || !s.providerRefreshAllowedLocked() {
+		return false
+	}
+	s.lastError = msg
+	return true
+}
+
+// SwitchProviderRefresh 只在当前状态仍属于 provider 自动化时应用后台刷新结果。
+func (s *Selector) SwitchProviderRefresh(up upstream.Upstream, interrupt bool, reason string, expectedVersion uint64) bool {
+	copyUp := up
+	s.mu.Lock()
+	if s.version != expectedVersion || !s.providerRefreshAllowedLocked() {
+		s.mu.Unlock()
+		return false
+	}
+	watchers := s.switchLocked(copyUp, interrupt, reason)
+	s.mu.Unlock()
+
+	if interrupt || (!interrupt && s.interruptDefault) {
+		s.tracker.Interrupt()
+	}
+	notifyWatchers(watchers)
+	return true
+}
+
+func (s *Selector) switchLocked(up upstream.Upstream, interrupt bool, reason string) []chan struct{} {
+	from := ""
+	if prev := s.current.Load(); prev != nil && prev.Scheme != "" {
+		from = prev.RedactedURL()
+	}
+	s.current.Store(&up)
+	s.appendHistoryLocked(SwitchEvent{
+		At:        time.Now(),
+		From:      from,
+		To:        up.RedactedURL(),
+		Reason:    reason,
+		Interrupt: interrupt,
+		Upstream:  &up,
+	})
+	s.lastError = ""
+	s.providerRefreshPaused = false
+	s.version++
+	return s.watchersLocked()
+}
+
+func (s *Selector) appendHistoryLocked(event SwitchEvent) {
 	s.history = append(s.history, event)
 	if len(s.history) > s.historyLimit {
 		copy(s.history, s.history[len(s.history)-s.historyLimit:])
 		s.history = s.history[:s.historyLimit]
+	}
+}
+
+func (s *Selector) providerRefreshAllowedLocked() bool {
+	cur := s.current.Load()
+	if cur == nil {
+		return !s.providerRefreshPaused
+	}
+	return cur.Source == "provider"
+}
+
+func (s *Selector) watchersLocked() []chan struct{} {
+	watchers := make([]chan struct{}, len(s.watchers))
+	copy(watchers, s.watchers)
+	return watchers
+}
+
+// notifyWatchers 非阻塞唤醒订阅者，避免 selector 写路径被后台任务卡住。
+func notifyWatchers(watchers []chan struct{}) {
+	for _, ch := range watchers {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
 	}
 }

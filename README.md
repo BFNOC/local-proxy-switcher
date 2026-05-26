@@ -67,6 +67,8 @@ provider:
 
 代理有效期优先级是：IPZAN JSON 里的 `expired` 优先；JSON 没有 `expired` 时使用 `provider.url` 里的 `minute=10`；两者都没有时才使用 `default_ttl`。
 
+把 `switching.auto_refresh` 设为 `true` 后，守护进程会在 provider 上游接近过期前自动拉取并切换。自动刷新失败时会保留当前上游，并把错误显示在 `status` 的“最近错误”里。手动 `lock` 或 `clear` 会暂停自动刷新；再次执行 `lps switch` 切回 provider 上游后会恢复自动刷新。
+
 JSON 响应形状示例：
 
 ```json
@@ -103,7 +105,7 @@ GET  /ui
 - 状态输出和日志式输出会隐藏 provider `no`、`secret` 和代理密码。
 - 控制 API 默认只监听回环地址。
 - 普通切换只影响新连接；需要断开旧连接时显式使用 `--interrupt`。
-- 当前版本只做手动锁定和手动切换；`auto_refresh` 保持关闭。
+- `auto_refresh` 只会刷新 provider 上游，不会覆盖手动 `lock` 或 `clear`。
 
 ## 版本和构建
 

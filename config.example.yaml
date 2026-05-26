@@ -16,7 +16,8 @@ upstream:
   dial_timeout: "3s"
 
 switching:
-  # 当前版本只做手动锁定和手动切换；自动刷新开关暂不启用。
+  # 启用后，守护进程会在 provider 上游接近过期前自动拉取并切换。
+  # 手动 lock 或 clear 后会暂停自动刷新；再次执行 lps switch 可恢复 provider 刷新。
   auto_refresh: false
   fail_closed_on_expired: true
   interrupt_existing_default: false
