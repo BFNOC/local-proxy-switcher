@@ -83,6 +83,7 @@ POST /switch
 POST /switch?interrupt=true
 POST /lock
 POST /clear
+POST /tcping
 GET  /ui
 ```
 
@@ -98,18 +99,26 @@ GET  /ui
 {"url":"socks5://user:pass@1.2.3.4:1080"}
 ```
 
+`POST /tcping` 接收 HTTPS 域名 URL，用当前上游测试到该域名 443/8443 端口的 TCP 连接延迟。输入会保持域名拨号，不会改成 IP 测试：
+
+```json
+{"url":"https://example.com","count":3}
+```
+
 ## 安全边界
 
 - 不要提交 `config.yaml` 或 `.env`。
 - 上游 API 密钥通过环境变量替换读取。
 - 状态输出和日志式输出会隐藏 provider `no`、`secret` 和代理密码。
 - 控制 API 默认只监听回环地址。
+- TCPing 只接受 HTTPS 域名 URL，拒绝 IP 字面量、localhost、`.local` 和解析到内网/回环/链路本地地址的域名。
+- TCPing 会保持域名目标拨号；HTTP/SOCKS5 上游的最终 DNS 解析由上游代理完成，请只使用可信代理上游。
 - 普通切换只影响新连接；需要断开旧连接时显式使用 `--interrupt`。
 - `auto_refresh` 只会刷新 provider 上游，不会覆盖手动 `lock` 或 `clear`。
 
 ## 版本和构建
 
-当前版本是 `0.1.4`，以根目录 `VERSION` 文件为准。
+当前版本是 `0.2.0`，以根目录 `VERSION` 文件为准。
 
 GitHub Actions 只在 `VERSION` 文件变更的 push 上执行三端编译，并创建或更新 `v版本号` 的 GitHub Release。Release assets 只包含对应平台的单个可执行文件：
 

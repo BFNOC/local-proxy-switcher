@@ -66,6 +66,14 @@
       cursor: pointer;
     }
     button:hover { background: #29413a; }
+    button:disabled {
+      opacity: 0.55;
+      cursor: wait;
+    }
+    button.warn {
+      border-color: #f59e0b;
+      background: #34260c;
+    }
     input {
       width: 100%;
       box-sizing: border-box;
@@ -76,9 +84,39 @@
       padding: 10px;
       margin-bottom: 10px;
     }
+    .tcping-panel {
+      margin-top: 4px;
+      margin-bottom: 14px;
+    }
+    .tcping-summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin: 10px 0;
+    }
+    .tcping-probes {
+      display: grid;
+      gap: 6px;
+      margin-top: 10px;
+    }
+    .probe {
+      display: grid;
+      grid-template-columns: 56px minmax(80px, 1fr) minmax(0, 2fr);
+      gap: 8px;
+      align-items: center;
+      border-top: 1px solid #2f3937;
+      padding-top: 6px;
+      font-size: 13px;
+    }
+    .latency-good { color: #4ade80; }
+    .latency-warn { color: #facc15; }
+    .latency-bad { color: #f87171; }
     .error { color: #ffb4a8; }
     @media (max-width: 620px) {
       .grid { grid-template-columns: 1fr; }
+      .tcping-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .probe { grid-template-columns: 44px minmax(70px, 1fr); }
+      .probe .value:last-child { grid-column: 1 / -1; }
     }
   </style>
 </head>
@@ -102,9 +140,29 @@
     <button onclick="lockManual(false)">手动锁定</button>
     <button onclick="lockManual(true)">手动锁定并中断</button>
   </div>
+  <div class="cell tcping-panel">
+    <div class="label">HTTPS 目标</div>
+    <input id="tcping-url" inputmode="url" autocomplete="url" placeholder="https://example.com">
+    <div class="actions">
+      <button id="tcping-button" onclick="tcping()">TCPing</button>
+      <button id="tcping-switch" onclick="switchAndRetest(false)">切换后复测</button>
+      <button id="tcping-switch-interrupt" onclick="switchAndRetest(true)">切换中断后复测</button>
+    </div>
+    <div class="grid tcping-summary">
+      <div><div class="label">目标</div><div class="value" id="tcping-target">-</div></div>
+      <div><div class="label">平均</div><div class="value" id="tcping-avg">-</div></div>
+      <div><div class="label">范围</div><div class="value" id="tcping-range">-</div></div>
+      <div><div class="label">丢包</div><div class="value" id="tcping-loss">-</div></div>
+    </div>
+    <div class="label">经由</div>
+    <div class="value" id="tcping-via">-</div>
+    <div class="tcping-probes" id="tcping-probes"></div>
+  </div>
   <div class="cell"><div class="label">最近结果</div><div class="value" id="result">-</div></div>
 </main>
 <script>
+let lastTCPing = null;
+
 async function refresh() {
   try {
     const res = await fetch('/status');
@@ -131,14 +189,105 @@ async function post(path, body) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.statusText);
     render(data);
+    return data;
   } catch (err) {
     show('error', err.message);
+    return null;
   }
 }
 function lockManual(interrupt) {
   const url = document.getElementById('manual').value.trim();
   if (!url) return show('error', '缺少手动上游地址');
   post('/lock' + (interrupt ? '?interrupt=true' : ''), {url});
+}
+async function tcping() {
+  const url = document.getElementById('tcping-url').value.trim();
+  if (!url) {
+    showTCPingError('缺少 HTTPS 域名');
+    return null;
+  }
+  setTCPingBusy(true);
+  try {
+    const res = await fetch('/tcping', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url})
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    renderTCPing(data);
+    return data;
+  } catch (err) {
+    showTCPingError(err.message);
+    return null;
+  } finally {
+    setTCPingBusy(false);
+  }
+}
+async function switchAndRetest(interrupt) {
+  const data = await post('/switch' + (interrupt ? '?interrupt=true' : ''));
+  if (data) await tcping();
+}
+function renderTCPing(data) {
+  lastTCPing = data;
+  const hasLatency = data.probes.some((probe) => probe.ok);
+  const avgClass = latencyClass(data.avg_ms, data.loss);
+  document.getElementById('tcping-target').textContent = data.target || '-';
+  document.getElementById('tcping-via').textContent = data.via || '-';
+  setLatency('tcping-avg', hasLatency ? (data.avg_ms || 0) + ' ms' : '-', avgClass);
+  setLatency('tcping-range', hasLatency ? (data.min_ms || 0) + '-' + (data.max_ms || 0) + ' ms' : '-', avgClass);
+  setLatency('tcping-loss', data.loss + '/' + data.count, data.loss ? 'latency-bad' : 'latency-good');
+  document.getElementById('tcping-probes').innerHTML = data.probes.map((probe) => {
+    const cls = probe.ok ? latencyClass(probe.latency_ms, 0) : 'latency-bad';
+    const latency = probe.ok ? probe.latency_ms + ' ms' : 'timeout';
+    const status = probe.ok ? '成功' : (probe.error || '失败');
+    return '<div class="probe">' +
+      '<div class="label">#' + probe.seq + '</div>' +
+      '<div class="value ' + cls + '">' + latency + '</div>' +
+      '<div class="value">' + escapeHTML(status) + '</div>' +
+      '</div>';
+  }).join('');
+  const warn = data.loss > 0 || (data.avg_ms || 0) > 300;
+  document.getElementById('tcping-switch').classList.toggle('warn', warn);
+  document.getElementById('tcping-switch-interrupt').classList.toggle('warn', warn);
+  show(data.success ? '' : 'error', data.success ? 'TCPing 成功' : (data.error || 'TCPing 失败'));
+}
+function showTCPingError(text) {
+  lastTCPing = null;
+  document.getElementById('tcping-target').textContent = '-';
+  document.getElementById('tcping-via').textContent = '-';
+  setLatency('tcping-avg', '-', 'latency-bad');
+  setLatency('tcping-range', '-', 'latency-bad');
+  setLatency('tcping-loss', '-', 'latency-bad');
+  document.getElementById('tcping-probes').innerHTML = '';
+  document.getElementById('tcping-switch').classList.remove('warn');
+  document.getElementById('tcping-switch-interrupt').classList.remove('warn');
+  show('error', text);
+}
+function setLatency(id, text, cls) {
+  const el = document.getElementById(id);
+  el.className = 'value ' + cls;
+  el.textContent = text;
+}
+function latencyClass(ms, loss) {
+  if (loss || ms === undefined || ms === null || ms > 300) return 'latency-bad';
+  if (ms >= 100) return 'latency-warn';
+  return 'latency-good';
+}
+function setTCPingBusy(busy) {
+  document.getElementById('tcping-button').disabled = busy;
+  document.getElementById('tcping-button').textContent = busy ? '测试中...' : 'TCPing';
+  document.getElementById('tcping-switch').disabled = busy;
+  document.getElementById('tcping-switch-interrupt').disabled = busy;
+}
+function escapeHTML(value) {
+  return String(value).replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[ch]));
 }
 function show(cls, text) {
   const el = document.getElementById('result');
