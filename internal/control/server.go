@@ -80,7 +80,11 @@ func NewServer(opts Options) *Server {
 	mux.HandleFunc("/clear", s.handleClear)
 	mux.HandleFunc("/ui", s.handleUI)
 	mux.HandleFunc("/", s.handleRoot)
-	s.server = &http.Server{Addr: opts.Addr, Handler: mux}
+	s.server = &http.Server{
+		Addr:              opts.Addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
 	return s
 }
 

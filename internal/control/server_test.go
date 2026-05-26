@@ -4,7 +4,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
+
+func TestNewServerSetsReadHeaderTimeout(t *testing.T) {
+	srv := NewServer(Options{})
+
+	if srv.server.ReadHeaderTimeout != 5*time.Second {
+		t.Fatalf("ReadHeaderTimeout = %v, want 5s", srv.server.ReadHeaderTimeout)
+	}
+}
 
 func TestAllowMutationRejectsCrossOrigin(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:17990/switch", nil)
