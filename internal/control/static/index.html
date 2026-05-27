@@ -74,6 +74,7 @@
       border-color: #f59e0b;
       background: #34260c;
     }
+    button.warn:hover { background: #44340f; }
     input {
       width: 100%;
       box-sizing: border-box;
@@ -130,15 +131,15 @@
     <div class="cell"><div class="label">活跃连接</div><div class="value" id="active">-</div></div>
   </div>
   <div class="actions">
-    <button onclick="post('/switch')">切换</button>
-    <button onclick="post('/switch?interrupt=true')">切换并中断旧连接</button>
-    <button onclick="post('/clear')">清空</button>
+    <button id="switch" onclick="switchProxy(false, false)">切换</button>
+    <button id="switch-interrupt" onclick="switchProxy(true, false)">切换并中断旧连接</button>
+    <button id="clear" onclick="clearProxy()">清空</button>
     <button onclick="refresh()">刷新</button>
   </div>
   <input id="manual" placeholder="http://1.2.3.4:8080 或 socks5://user:pass@1.2.3.4:1080">
   <div class="actions">
-    <button onclick="lockManual(false)">手动锁定</button>
-    <button onclick="lockManual(true)">手动锁定并中断</button>
+    <button id="manual-lock" onclick="lockManual(false)">手动锁定</button>
+    <button id="manual-lock-interrupt" onclick="lockManual(true)">手动锁定并中断</button>
   </div>
   <div class="cell tcping-panel">
     <div class="label">HTTPS 目标</div>
@@ -162,22 +163,38 @@
 </main>
 <script>
 let lastTCPing = null;
+let currentUpstreamURL = '';
+let tcpingUpstreamURL = '';
+let switchBusy = false;
+let tcpingBusy = false;
+let statusFetchFailed = false;
 
-async function refresh() {
+async function refresh(updateResult = true) {
   try {
     const res = await fetch('/status');
     const data = await res.json();
-    render(data);
+    const recovered = statusFetchFailed;
+    statusFetchFailed = false;
+    render(data, updateResult || recovered);
   } catch (err) {
+    statusFetchFailed = true;
     show('error', err.message);
   }
 }
-function render(data) {
+function render(data, updateResult = true) {
+  const nextUpstreamURL = data.current ? (data.current.url || '') : '';
+  const upstreamChanged = nextUpstreamURL !== currentUpstreamURL;
+  currentUpstreamURL = nextUpstreamURL;
   document.getElementById('current').textContent = data.current ? data.current.url : '无';
   document.getElementById('expires').textContent = data.current ? (data.current.expires_in || '-') : '-';
   document.getElementById('net').textContent = data.current ? (data.current.net || '-') : '-';
   document.getElementById('active').textContent = data.active_connections;
-  show(data.last_error ? 'error' : '', data.last_error || data.last_switch || '成功');
+  if (lastTCPing && upstreamChanged && tcpingUpstreamURL !== currentUpstreamURL) {
+    clearTCPingResult('上游已切换，请重新 TCPing');
+  }
+  if (updateResult || data.last_error || upstreamChanged) {
+    show(data.last_error ? 'error' : '', data.last_error || data.last_switch || '成功');
+  }
 }
 async function post(path, body) {
   try {
@@ -196,11 +213,30 @@ async function post(path, body) {
   }
 }
 function lockManual(interrupt) {
+  if (mutationBusy()) return null;
   const url = document.getElementById('manual').value.trim();
   if (!url) return show('error', '缺少手动上游地址');
-  post('/lock' + (interrupt ? '?interrupt=true' : ''), {url});
+  return runMutation('/lock' + (interrupt ? '?interrupt=true' : ''), {url});
+}
+function clearProxy() {
+  return runMutation('/clear');
+}
+async function switchProxy(interrupt, retest) {
+  const data = await runMutation('/switch' + (interrupt ? '?interrupt=true' : ''));
+  if (data && retest) await tcping();
+  return data;
+}
+async function runMutation(path, body) {
+  if (mutationBusy()) return null;
+  setSwitchBusy(true);
+  try {
+    return await post(path, body);
+  } finally {
+    setSwitchBusy(false);
+  }
 }
 async function tcping() {
+  if (switchBusy || tcpingBusy) return null;
   const url = document.getElementById('tcping-url').value.trim();
   if (!url) {
     showTCPingError('缺少 HTTPS 域名');
@@ -225,11 +261,16 @@ async function tcping() {
   }
 }
 async function switchAndRetest(interrupt) {
-  const data = await post('/switch' + (interrupt ? '?interrupt=true' : ''));
-  if (data) await tcping();
+  return switchProxy(interrupt, true);
 }
 function renderTCPing(data) {
   lastTCPing = data;
+  tcpingUpstreamURL = data.via || '';
+  if (currentUpstreamURL && tcpingUpstreamURL && tcpingUpstreamURL !== currentUpstreamURL) {
+    clearTCPingResult('上游已切换，请重新 TCPing');
+    show('error', 'TCPing 结果已过期');
+    return;
+  }
   const hasLatency = data.probes.some((probe) => probe.ok);
   const avgClass = latencyClass(data.avg_ms, data.loss);
   document.getElementById('tcping-target').textContent = data.target || '-';
@@ -252,16 +293,23 @@ function renderTCPing(data) {
   document.getElementById('tcping-switch-interrupt').classList.toggle('warn', warn);
   show(data.success ? '' : 'error', data.success ? 'TCPing 成功' : (data.error || 'TCPing 失败'));
 }
-function showTCPingError(text) {
+function clearTCPingResult(viaText) {
   lastTCPing = null;
+  tcpingUpstreamURL = '';
   document.getElementById('tcping-target').textContent = '-';
-  document.getElementById('tcping-via').textContent = '-';
-  setLatency('tcping-avg', '-', 'latency-bad');
-  setLatency('tcping-range', '-', 'latency-bad');
-  setLatency('tcping-loss', '-', 'latency-bad');
+  document.getElementById('tcping-via').textContent = viaText || '-';
+  setLatency('tcping-avg', '-', '');
+  setLatency('tcping-range', '-', '');
+  setLatency('tcping-loss', '-', '');
   document.getElementById('tcping-probes').innerHTML = '';
   document.getElementById('tcping-switch').classList.remove('warn');
   document.getElementById('tcping-switch-interrupt').classList.remove('warn');
+}
+function showTCPingError(text) {
+  clearTCPingResult('-');
+  setLatency('tcping-avg', '-', 'latency-bad');
+  setLatency('tcping-range', '-', 'latency-bad');
+  setLatency('tcping-loss', '-', 'latency-bad');
   show('error', text);
 }
 function setLatency(id, text, cls) {
@@ -274,11 +322,32 @@ function latencyClass(ms, loss) {
   if (ms >= 100) return 'latency-warn';
   return 'latency-good';
 }
+function mutationBusy() {
+  return switchBusy;
+}
+function setSwitchBusy(busy) {
+  switchBusy = busy;
+  updateBusyState();
+}
 function setTCPingBusy(busy) {
-  document.getElementById('tcping-button').disabled = busy;
-  document.getElementById('tcping-button').textContent = busy ? '测试中...' : 'TCPing';
-  document.getElementById('tcping-switch').disabled = busy;
-  document.getElementById('tcping-switch-interrupt').disabled = busy;
+  tcpingBusy = busy;
+  updateBusyState();
+}
+function updateBusyState() {
+  const mutationLocked = mutationBusy();
+  const tcpingLocked = switchBusy || tcpingBusy;
+  document.getElementById('switch').disabled = mutationLocked;
+  document.getElementById('switch').textContent = switchBusy ? '切换中...' : '切换';
+  document.getElementById('switch-interrupt').disabled = mutationLocked;
+  document.getElementById('switch-interrupt').textContent = switchBusy ? '切换中...' : '切换并中断旧连接';
+  document.getElementById('clear').disabled = mutationLocked;
+  document.getElementById('manual').disabled = mutationLocked;
+  document.getElementById('manual-lock').disabled = mutationLocked;
+  document.getElementById('manual-lock-interrupt').disabled = mutationLocked;
+  document.getElementById('tcping-button').disabled = tcpingLocked;
+  document.getElementById('tcping-button').textContent = tcpingBusy ? '测试中...' : 'TCPing';
+  document.getElementById('tcping-switch').disabled = tcpingLocked;
+  document.getElementById('tcping-switch-interrupt').disabled = tcpingLocked;
 }
 function escapeHTML(value) {
   return String(value).replace(/[&<>"']/g, (ch) => ({
@@ -295,7 +364,7 @@ function show(cls, text) {
   el.textContent = text || '-';
 }
 refresh();
-setInterval(refresh, 3000);
+setInterval(() => refresh(false), 3000);
 </script>
 </body>
 </html>
