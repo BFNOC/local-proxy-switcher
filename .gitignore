@@ -16,3 +16,4 @@ dist/
 .cursor/
 .aider*
 /plan.md
+.DS_Store

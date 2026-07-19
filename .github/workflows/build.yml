@@ -81,6 +81,7 @@ jobs:
           name: lps-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/lps-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
           if-no-files-found: error
+          retention-days: 1
 
   release:
     name: 发布 Release
